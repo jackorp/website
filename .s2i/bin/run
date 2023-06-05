@@ -1,2 +1,2 @@
 #!/bin/bash
-ruby -run -e httpd _site -p 8080
+bundle exec ruby -run -e httpd _site -p 8080
