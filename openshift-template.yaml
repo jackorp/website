@@ -58,7 +58,7 @@ objects:
     metadata:
       name: "${NAME}"
       annotations:
-        description: Defines how to build the application
+        description: Build the Developer Portal static site
         template.alpha.openshift.io/wait-for-ready: 'true'
     spec:
       source:
@@ -86,6 +86,36 @@ objects:
         - type: GitHub
           github:
             secret: "${GITHUB_WEBHOOK_SECRET}"
+  - kind: BuildConfig
+    apiVersion: build.openshift.io/v1
+    metadata:
+      name: "${NAME}-static"
+      annotations:
+        template.alpha.openshift.io/wait-for-ready: 'true'
+    spec:
+      output:
+        to:
+          kind: ImageStreamTag
+          name: 'developer-portal-website:static'
+      source:
+        dockerfile: |-
+          FROM ${NAME}:${OUTPUT_TAG}
+          COPY _site /opt/app-src
+        images:
+          - from:
+              kind: ImageStreamTag
+              name: "${NAME}:${OUTPUT_TAG}"
+            paths:
+              - sourcePath: /opt/app-src/_site
+                destinationDir: "."
+      strategy:
+        dockerStrategy:
+          from:
+            kind: ImageStreamTag
+            name: "${NAME}:latest"
+      triggers:
+        - imageChange: {}
+          type: ImageChange
   - kind: DeploymentConfig
     apiVersion: v1
     metadata:
