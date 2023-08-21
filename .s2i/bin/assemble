@@ -18,6 +18,7 @@ bundle exec jekyll build
 # Remove everything other than _site
 shopt -s extglob
 rm -rf !(_site|.bundle|bundle|Gemfile|Gemfile.lock)
+echo $PWD
 
 # Drop empty lines
 find _site -type f -iname '*.html' | while read z; do
