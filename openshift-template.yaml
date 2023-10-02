@@ -1,0 +1,398 @@
+---
+kind: Template
+apiVersion: template.openshift.io/v1
+metadata:
+  name: developer-portal-website
+  annotations:
+    openshift.io/display-name: Fedora Developer portal website
+    description: Developer portal website, https://github.com/developer-portal/website
+    tags: developer-portal
+    iconClass: icon-ruby
+    template.openshift.io/long-description: ''
+    template.openshift.io/provider-display-name: Red Hat, Inc.
+    template.openshift.io/documentation-url: https://github.com/developer-portal/website/
+    template.openshift.io/support-url: https://access.redhat.com
+message: 'The following service(s) have been created in your project: ${NAME}.'
+labels:
+  template: developer-portal-website
+objects:
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      name: "${NAME}"
+      annotations:
+        description: Exposes and load balances the application pods
+    spec:
+      ports:
+        - name: web
+          port: 8080
+          targetPort: 8080
+      selector:
+        name: "${NAME}"
+  - kind: Route
+    apiVersion: route.openshift.io/v1
+    metadata:
+      name: "${NAME}"
+      annotations:
+        template.openshift.io/expose-uri: http://{.spec.host}{.spec.path}
+    spec:
+      host: "${APPLICATION_DOMAIN}"
+      to:
+        kind: Service
+        name: "${NAME}"
+      port:
+        targetPort: web
+      # Terminate HTTPS on the edge.
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
+      wildcardPolicy: None
+  - kind: ImageStream
+    apiVersion: v1
+    metadata:
+      name: "${BUILD_IMAGE}"
+      annotations:
+        description: Keeps track of changes in the application build image
+  - kind: ImageStream
+    apiVersion: v1
+    metadata:
+      name: "${RUNTIME_IMAGE}"
+      annotations:
+        description: Keeps track of changes in the application runtime image
+  - kind: ImageStream
+    apiVersion: v1
+    metadata:
+      name: "${NAME}-rss"
+  - kind: BuildConfig
+    apiVersion: build.openshift.io/v1
+    metadata:
+      name: "${BUILD_IMAGE}"
+      annotations:
+        description: Build the Developer Portal static site
+        template.alpha.openshift.io/wait-for-ready: 'true'
+    spec:
+      successfulBuildsHistoryLimit: 2
+      failedBuildsHistoryLimit: 1
+      source:
+        contextDir: "${CONTEXT_DIR}"
+        type: Git
+        git:
+          uri: "${SOURCE_REPOSITORY_URL}"
+          ref: "${SOURCE_REPOSITORY_REF}"
+      strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: DockerImage
+            name: "${BUILD_SOURCE_IMAGE}:${BUILD_SOURCE_IMAGE_TAG}"
+          env:
+            - name: RUBYGEM_MIRROR
+              value: "${RUBYGEM_MIRROR}"
+            - name: BUILD_ENV
+              value: "${BUILD_ENV}"
+            - name: LATEST_GIT
+              value: "${LATEST_GIT}"
+      output:
+        to:
+          kind: ImageStreamTag
+          name: "${BUILD_IMAGE}:${BUILD_TAG}"
+      triggers:
+        - type: ImageChange
+          imageChange: {}
+        - type: ConfigChange
+        - type: GitHub
+          github:
+            secret: "${GITHUB_WEBHOOK_SECRET}"
+  - kind: BuildConfig
+    apiVersion: build.openshift.io/v1
+    metadata:
+      name: "${NAME}-rss"
+      annotations:
+        description: Pull RSS feed from fedoraplanet.org and embed it in static HTML
+        template.alpha.openshift.io/wait-for-ready: 'true'
+    spec:
+      successfulBuildsHistoryLimit: 2
+      failedBuildsHistoryLimit: 1
+      source:
+        type: Image
+        images:
+          - from:
+              kind: ImageStreamTag
+              name: "${BUILD_IMAGE}:${BUILD_TAG}"
+            paths:
+              - sourcePath: /opt/app-root/src/_site
+                destinationDir: "."
+              - sourcePath: /opt/app-root/src/rss.py
+                destinationDir: "."
+              - sourcePath: /opt/app-root/src/requirements.txt
+                destinationDir: "."
+      strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: DockerImage
+            name: "${RSS_BUILDER_SOURCE}:${RSS_BUILDER_SOURCE_TAG}"
+      output:
+        to:
+          kind: ImageStreamTag
+          name: "${NAME}-rss:latest"
+      triggers:
+        - type: ConfigChange
+        - type: ImageChange
+          imageChange: {}
+        - type: ImageChange
+          imageChange:
+            from:
+              kind: ImageStreamTag
+              name: "${BUILD_IMAGE}:${BUILD_TAG}"
+        - type: Generic
+          generic:
+            secretReference:
+              name: "rss-update-webhook-secret"
+  - kind: Secret
+    apiVersion: v1
+    metadata:
+      name: rss-update-webhook-secret
+    type: Opaque
+    stringData:
+      WebHookSecretKey: "${RSS_WEBHOOK_REBUILD_SECRET}"
+  - kind: CronJob
+    apiVersion: batch/v1
+    metadata:
+      name: rss-feed-rebuild
+    spec:
+      schedule: '*/30 * * * *'
+      parallelism: 1
+      successfulJobsHistoryLimit: 2
+      failedJobsHistoryLimit: 1
+      completions: 1
+      activeDeadlineSeconds: 10
+      backoffLimit: 1
+      jobTemplate:
+        spec:
+          template:
+            metadata:
+              labels:
+                parent: "cronjob-rss-feed-rebuild"
+            spec:
+              containers:
+              - name: rss-feed-rebuild
+                image: registry.access.redhat.com/ubi9:latest
+                command:
+                  - curl
+                  - '-X'
+                  - POST
+                  - '-k'
+                  - "${CLUSTER_API_URL}/apis/build.openshift.io/v1/namespaces/$(POD_NAMESPACE)/buildconfigs/${NAME}-rss/webhooks/$(RSS_WEBHOOK_SECRET)/generic"
+                env:
+                  - name: POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: RSS_WEBHOOK_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: "rss-update-webhook-secret"
+                        key: "WebHookSecretKey"
+              restartPolicy: Never
+  - kind: BuildConfig
+    apiVersion: build.openshift.io/v1
+    metadata:
+      name: "${RUNTIME_IMAGE}"
+      annotations:
+        description: Build the Developer Portal runtime image
+        template.alpha.openshift.io/wait-for-ready: 'true'
+    spec:
+      successfulBuildsHistoryLimit: 2
+      failedBuildsHistoryLimit: 1
+      output:
+        to:
+          kind: ImageStreamTag
+          name: '${RUNTIME_IMAGE}:${RUNTIME_TAG}'
+      source:
+        type: Image
+        images:
+          - from:
+              kind: ImageStreamTag
+              name: "${NAME}-rss:latest"
+            paths:
+              - sourcePath: /opt/app-root/src/_site/.
+                destinationDir: "."
+      strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: DockerImage
+            name: "${RUNTIME_SOURCE_IMAGE}:${RUNTIME_SOURCE_IMAGE_TAG}"
+      triggers:
+        - type: ConfigChange
+        - type: ImageChange
+          imageChange: {}
+        - type: ImageChange
+          imageChange:
+            from:
+              kind: ImageStreamTag
+              name: "${NAME}-rss:latest"
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: "${NAME}"
+      annotations:
+        description: Defines how to deploy the application server
+        template.alpha.openshift.io/wait-for-ready: 'true'
+    spec:
+      strategy:
+        type: Rolling
+        rollingParams:
+          updatePeriodSeconds: 1
+          intervalSeconds: 1
+          timeoutSeconds: 600
+          maxUnavailable: 25%
+          maxSurge: 25%
+        resources: {}
+        activeDeadlineSeconds: 21600
+      revisionHistoryLimit: 2
+      triggers:
+      - type: ImageChange
+        imageChangeParams:
+          automatic: true
+          containerNames:
+          - "${RUNTIME_IMAGE}"
+          from:
+            kind: ImageStreamTag
+            name: "${RUNTIME_IMAGE}:${RUNTIME_TAG}"
+      - type: ConfigChange
+      replicas: 1
+      selector:
+        name: "${NAME}"
+        deploymentconfig: "${NAME}"
+      template:
+        metadata:
+          name: "${NAME}"
+          labels:
+            app: "${NAME}"
+            deploymentconfig: "${NAME}"
+            name: "${NAME}"
+        spec:
+          containers:
+          - name: "${RUNTIME_IMAGE}"
+            image: " "
+            ports:
+            - containerPort: 8080
+            readinessProbe:
+              timeoutSeconds: 3
+              initialDelaySeconds: 5
+              httpGet:
+                path: "/"
+                port: 8080
+            livenessProbe:
+              timeoutSeconds: 3
+              initialDelaySeconds: 10
+              httpGet:
+                path: "/"
+                port: 8080
+parameters:
+- name: NAME
+  displayName: Name
+  description: The name assigned to all of the frontend objects defined in this template.
+  required: true
+  value: developer-portal-website
+- name: BUILD_SOURCE_IMAGE
+  displayName: Source image
+  required: true
+  description: The OpenShift source image for building the pages
+  value: registry.access.redhat.com/ubi9/ruby-31
+- name: BUILD_SOURCE_IMAGE_TAG
+  displayName: Source image tag
+  required: true
+  description: The source image tag.
+  value: latest
+- name: BUILD_IMAGE
+  displayName: Build image
+  required: true
+  description: Name of the build image.
+  value: developer-portal-build
+- name: BUILD_TAG
+  displayName: Output image tag
+  required: true
+  description: Tag of the build image.
+  value: latest
+- name: RSS_BUILDER_SOURCE
+  displayName: RSS builder image
+  required: true
+  value: registry.access.redhat.com/ubi9/python-311
+- name: RSS_BUILDER_SOURCE_TAG
+  displayName: RSS builder tag
+  required: true
+  value: latest
+- name: RUNTIME_SOURCE_IMAGE
+  displayName: Source image
+  required: true
+  description: The OpenShift source image for serving the pages
+  value: registry.access.redhat.com/ubi9/nginx-122
+- name: RUNTIME_SOURCE_IMAGE_TAG
+  displayName: Source image tag
+  required: true
+  description: The source image tag.
+  value: latest
+- name: RUNTIME_IMAGE
+  displayName: Runtime image name
+  required: true
+  description: Name of the runtime image.
+  value: developer-portal-runtime
+- name: RUNTIME_TAG
+  displayName: Runtime image tag
+  required: true
+  description: Tag of the runtime image.
+  value: latest
+- name: SOURCE_REPOSITORY_URL
+  displayName: Git Repository URL
+  required: true
+  description: The URL of the repository with your application source code.
+  value: https://github.com/developer-portal/website.git
+- name: SOURCE_REPOSITORY_REF
+  displayName: Git Reference
+  description: Set this to a branch name, tag or other ref of your repository if you
+    are not using the default branch.
+  value: ''
+- name: CONTEXT_DIR
+  displayName: Context Directory
+  description: Set this to the relative path to your project if it is not in the root
+    of your repository.
+- name: APPLICATION_DOMAIN
+  displayName: Application Hostname
+  description: The exposed hostname that will route to the Nginx service, if left
+    blank a value will be defaulted.
+  value: ''
+- name: GITHUB_WEBHOOK_SECRET
+  displayName: GitHub Webhook Secret
+  description: Github trigger secret.  A difficult to guess string encoded as part
+    of the webhook URL.  Not encrypted.
+  generate: expression
+  from: "[a-zA-Z0-9]{40}"
+- name: RSS_WEBHOOK_REBUILD_SECRET
+  displayName: CronJob webhook rebuild for RSS feed
+  description: Hello
+  generate: expression
+  from: "[a-z0-9]{40}"
+- name: RUBYGEM_MIRROR
+  displayName: Custom RubyGems Mirror URL
+  description: The custom RubyGems mirror URL
+  value: ''
+- name: BUILD_ENV
+  displayName: Jekyll image environment for s2i.
+  description: |
+    If set to "development", all dependencies are installed from Gemfile
+    and the header with "This is a development server." remains.
+    If unset or set to "production", only dependencies to build the site are installed.
+  value: ""
+- name: LATEST_GIT
+  displayName: Use latest git commit for website and content.
+  description: Set this to check out the latest git commit for website and content repos.
+  value: ''
+- name: CLUSTER_API_URL
+  displayName: URL for cluster Webhooks
+  description: The URL for calling webhooks on cluster resources.
+  required: true
+  description:
+  value: 'https://api.crc.testing:6443'
