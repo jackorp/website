@@ -5,23 +5,34 @@ ENV APPDIR="/opt/developerportal/website/"
 ADD . "${APPDIR}"
 WORKDIR "${APPDIR}"
 
+ENV PKGS=" \
+    autoconf \
+    gcc \
+    git \
+    make \
+    python-feedparser \
+    ruby-devel \
+    rubygem-nokogiri \
+		rubygem-webrick \
+    libxml2-devel \
+    libxslt-devel \
+    "
 
-
-RUN set -x && cd "${APPDIR}" && \
+RUN set -x && \
     echo "Set disable_coredump false" >> /etc/sudo.conf && \
-    \
-    ./setup.sh && \
-    \
+    dnf install ${PKGS} -y && \
+    dnf group install "C Development Tools and Libraries" -y && \
     dnf autoremove -y && \
     dnf clean all -y && \
     \
+    bundle config build.nokogiri --use-system-libraries && \
+    bundle install && \
+    \
     git reset --hard origin/master && \
     git submodule update --init --recursive && \
-    cd content && \
+    pushd content && \
     git reset --hard origin/master && \
-    \
-    : 'This is a workaround for https://github.com/developer-portal/website/issues/88#issuecomment-850928283' \
-    git cherry-pick 1447b716c9cdf2417918cbf0b8566b665d22fd93 \
+    popd && \
     \
     jekyll build
 
