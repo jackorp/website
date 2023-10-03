@@ -1,28 +1,75 @@
 #!/bin/bash
+# Env variable to adjust s2i assemble results:
+# variable         default-value description
+# BUILD_ENV        "production"  If set, deletes the _includes/announcement.html heading. If set to development, webrick is installed.
+# LATEST_GIT       ""            If set, hard resets git for website and checks out latest commit of the content submodule.
+# DROP_EMPTY_LINES ""            Drop empty lines that might've been inserted by jekyll. Useful for better diffing.
+
 /usr/libexec/s2i/assemble || :
 # $LANG fixes bug in jekyll-git-authors
 export LANG=en_US.UTF-8
+
+export BUILD_ENV=${BUILD_ENV:-"production"}
+
+# s2i Ruby images do not contain pip, so we cannot install feedparser.
+# Let's make it available first.
+[ python3 -m pip > /dev/null 2>&1 ] || {
+  echo "--> Bootstrapping 'pip' with 'ensurepip'"
+  python3 -m ensurepip || {
+    echo '`python3 -m ensurepip` failed, cannot install feedparser'
+    exit 1
+  }
+}
 python3 -m pip install --user feedparser
 
-# Update content to latest
-git submodule update --recursive --remote
+
+[[ -n "$LATEST_GIT" ]] && {
+  git reset master --hard
+
+  git submodule update --recursive --remote --force
+} || {
+  # Otherwise just initialize it and pull it,
+  # we should already be in a proper website repo with the expected commits.
+  git submodule update --init --recursive || {
+    echo "Cannot checkout submodule with content"
+    exit 1
+  }
+}
 
 echo -n "--> Running "
-[[ -n "$REAL_BUILD" ]] && {
+bundle config set --local path "./bundle"
+[ -n "$BUILD_ENV" ] && {
   echo -n "real"
   echo > _includes/announcement.html
-} || echo -n "developement"
-echo 'build'
+
+  bundle config set --local without test development
+} || echo -n "development"
+echo ' build'
+
+bundle install
 
 bundle exec jekyll build
 # Remove everything other than _site
 shopt -s extglob
-rm -rf !(_site)
+rm -rf !(_site|rss.py|requirements.txt)
 
-# Drop empty lines
-find _site -type f -iname '*.html' | while read z; do
-  echo -ne "\n> $z ... "
-  TMP="`ruby -ne 'BEGIN{ \$pre = false } ; x = \$_ ; \$pre = ( (x =~ /<pre/i) || (\$pre && !(x =~ /<\/pre/i) ) ) ; print unless (!\$pre && x =~ /^\s*$/)' < "$z"`" && echo ok || echo fail
-  echo "$TMP" > "$z"
-done
-echo
+[ -n "$DROP_EMPTY_LINES" ] && {
+  echo "--> Dropping empty lines."
+
+  # Sometimes jekyll output contains seemingly random empty lines,
+  # making it harder to see a proper git diff. It doesn't affect viewing the site.
+  # Drop empty lines to fix that.
+  find _site -type f -iname '*.html' | while read z; do
+    echo -ne "\n> $z ... "
+    TMP="`ruby -ne 'BEGIN{ \$pre = false } ; x = \$_ ; \$pre = ( (x =~ /<pre/i) || (\$pre && !(x =~ /<\/pre/i) ) ) ; print unless (!\$pre && x =~ /^\s*$/)' < "$z"`" && echo ok || echo fail
+    echo "$TMP" > "$z"
+  done
+#
+}
+
+# We don't need webrick in prod, we have nginx.
+[[ "$BUILD_ENV" == "development" ]] && {
+  gem install webrick
+}
+
+echo "--> Assemble finished"
