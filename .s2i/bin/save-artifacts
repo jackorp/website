@@ -1,0 +1,11 @@
+#!/bin/bash
+
+BUNDLE_DIR=${BUNDLE_DIR:-./bundle}
+
+pushd "$HOME" >/dev/null
+
+if [ -d "$BUNDLE_DIR" ]; then
+  tar cf - "$BUNDLE_DIR"
+fi
+
+popd >/dev/null

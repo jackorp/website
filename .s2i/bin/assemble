@@ -5,6 +5,12 @@
 # LATEST_GIT       ""            If set, hard resets git for website and checks out latest commit of the content submodule.
 # DROP_EMPTY_LINES ""            Drop empty lines that might've been inserted by jekyll. Useful for better diffing.
 
+# Restore build artifacts for openshift incremental build
+if [ "$(ls -a /tmp/artifacts/ 2>/dev/null)" ]; then
+  echo "--> Restoring build artifacts"
+  mv /tmp/artifacts/* $HOME/
+fi
+
 /usr/libexec/s2i/assemble || :
 # $LANG fixes bug in jekyll-git-authors
 export LANG=en_US.UTF-8
@@ -51,7 +57,7 @@ bundle install
 bundle exec jekyll build
 # Remove everything other than _site
 shopt -s extglob
-rm -rf !(_site|rss.py|requirements.txt)
+rm -rf !(_site|rss.py|requirements.txt|bundle)
 
 [ -n "$DROP_EMPTY_LINES" ] && {
   echo "--> Dropping empty lines."

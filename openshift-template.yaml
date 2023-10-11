@@ -85,6 +85,7 @@ objects:
           from:
             kind: DockerImage
             name: "${BUILD_SOURCE_IMAGE}:${BUILD_SOURCE_IMAGE_TAG}"
+          incremental: true
           env:
             - name: RUBYGEM_MIRROR
               value: "${RUBYGEM_MIRROR}"
