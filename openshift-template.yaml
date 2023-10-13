@@ -62,6 +62,10 @@ objects:
   - kind: ImageStream
     apiVersion: v1
     metadata:
+      name: "${NAME}-rss-builder"
+  - kind: ImageStream
+    apiVersion: v1
+    metadata:
       name: "${NAME}-rss"
   - kind: BuildConfig
     apiVersion: build.openshift.io/v1
@@ -104,6 +108,50 @@ objects:
         - type: GitHub
           github:
             secret: "${GITHUB_WEBHOOK_SECRET}"
+  - kind: BuildConfig
+    apiVersion: build.openshift.io/v1
+    metadata:
+      name: "${NAME}-rss-builder"
+      annotations:
+        description: Base image for RSS feed
+        template.alpha.openshift.io/wait-for-ready: 'true'
+    spec:
+      successfulBuildsHistoryLimit: 2
+      failedBuildsHistoryLimit: 1
+      source:
+        dockerfile: |
+          FROM ${RSS_BUILDER_SOURCE}:${RSS_BUILDER_SOURCE_TAG}
+
+          COPY /opt/app-root/src/ /tmp
+
+          RUN ls -al /tmp
+        images:
+          - from:
+              kind: ImageStreamTag
+              name: "${BUILD_IMAGE}:${BUILD_TAG}"
+            paths:
+              - sourcePath: /opt/app-root/src/rss.py
+                destinationDir: "."
+              - sourcePath: /opt/app-root/src/requirements.txt
+                destinationDir: "."
+      strategy:
+        dockerStrategy:
+          from:
+            kind: DockerImage
+            name: "${RSS_BUILDER_SOURCE}:${RSS_BUILDER_SOURCE_TAG}"
+      output:
+        to:
+          kind: ImageStreamTag
+          name: "${NAME}-rss:latest"
+      triggers:
+        - type: ConfigChange
+        - type: ImageChange
+          imageChange: {}
+        - type: ImageChange
+          imageChange:
+            from:
+              kind: ImageStreamTag
+              name: "${BUILD_IMAGE}:${BUILD_TAG}"
   - kind: BuildConfig
     apiVersion: build.openshift.io/v1
     metadata:
